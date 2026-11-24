@@ -50,18 +50,24 @@ pub fn horizontal_fov_degrees(settings: &RenderingSettings, mode: Option<MoveMod
 }
 
 /// Applies the two `[Display]` angles an INI set, warning about and ignoring unusable values.
-pub(crate) fn apply_ini_value(config: &mut EngineConfig, key: &str, raw: &str) {
-    match raw.parse::<f32>() {
-        Ok(value) if valid_fov_degrees(value) => {
-            match key {
-                "fDefaultWorldFOV" => config.world_fov_degrees = value,
-                _ => config.first_person_fov_degrees = value,
+/// `get` reads a merged `[Display]` value by key.
+pub(crate) fn apply_ini<'a>(config: &mut EngineConfig, get: impl Fn(&str) -> Option<&'a str>) {
+    for (key, target) in [
+        ("fDefaultWorldFOV", &mut config.world_fov_degrees),
+        ("fDefault1stPersonFOV", &mut config.first_person_fov_degrees),
+    ] {
+        let Some(raw) = get(key) else {
+            continue;
+        };
+        match raw.parse::<f32>() {
+            Ok(value) if valid_fov_degrees(value) => {
+                *target = value;
+                config.settings_overrides.push(format!("ini:{key}"));
             }
-            config.settings_overrides.push(format!("ini:{key}"));
+            _ => eprintln!(
+                "warning: ignoring {key}={raw:?}; expected a horizontal angle from {MIN_FOV_DEGREES} to {MAX_FOV_DEGREES} degrees"
+            ),
         }
-        _ => eprintln!(
-            "warning: ignoring {key}={raw:?}; expected a horizontal angle from {MIN_FOV_DEGREES} to {MAX_FOV_DEGREES} degrees"
-        ),
     }
 }
 

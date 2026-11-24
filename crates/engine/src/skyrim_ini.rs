@@ -150,11 +150,7 @@ impl SkyrimIni {
                 ),
             }
         }
-        for key in ["fDefaultWorldFOV", "fDefault1stPersonFOV"] {
-            if let Some(raw) = self.get("Display", key) {
-                crate::camera_fov::apply_ini_value(config, key, raw);
-            }
-        }
+        crate::camera_fov::apply_ini(config, |key| self.get("Display", key));
         for (index, key) in crate::sun::SUN_KEYS.into_iter().enumerate() {
             let Some(raw) = self.get("Sky", key) else {
                 continue;
