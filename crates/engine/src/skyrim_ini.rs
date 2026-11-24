@@ -15,6 +15,8 @@
 //! | `[Sky]` | `fSunXExtreme`, `fSunYExtreme`, `fSunZExtreme`, `fSunDirXExtreme`, `fSunAlphaTransTime` | explicit sun-path overrides over the pack's GMST (retail exe default for a missing GMST) |
 //! | `[General]` | `uGridsToLoad` | full-detail grid: `stream_radius = (uGridsToLoad - 1) / 2` |
 //! | `[Display]` | `fShadowDistance` | upper bound for sun shadow cascades, in Creation units |
+//! | `[Display]` | `fDefaultWorldFOV` | horizontal NOCLIP field of view, in degrees (retail default 80, RF-CAM-009) |
+//! | `[Display]` | `fDefault1stPersonFOV` | horizontal WALK field of view, in degrees (retail default 80, RF-CAM-009) |
 //! | `[TerrainManager]` | `fSplitDistanceMult` | terrain LOD split rule: a block of `level` cells splits into its four children under `fSplitDistanceMult` x `level` x 2,048 x sqrt(2) units (34,756 / 69,512 at levels 8 / 16 with 1.5) |
 //! | `[TerrainManager]` | `fBlockMaximumDistance` | outer reach of tier 16, times `fSplitDistanceMult`, until a level-32 tier exists (not a retail terrain cut) |
 //! | `[TerrainManager]` | `fBlockLevel0Distance` | parsed and kept for the object LOD rule (level 8 hands over to level 4); does not affect terrain, so it changes nothing on screen until object LOD lands |
@@ -146,6 +148,11 @@ impl SkyrimIni {
                 _ => eprintln!(
                     "warning: ignoring fShadowDistance={raw:?}; expected at least {MIN_SUN_SHADOW_DISTANCE} Creation units"
                 ),
+            }
+        }
+        for key in ["fDefaultWorldFOV", "fDefault1stPersonFOV"] {
+            if let Some(raw) = self.get("Display", key) {
+                crate::camera_fov::apply_ini_value(config, key, raw);
             }
         }
         for (index, key) in crate::sun::SUN_KEYS.into_iter().enumerate() {
@@ -345,6 +352,61 @@ mod tests {
             let config = apply(text);
             assert_eq!(config.stream_radius, defaults.stream_radius, "{text}");
             assert_eq!(config.terrain_lod, defaults.terrain_lod, "{text}");
+        }
+    }
+
+    #[test]
+    fn display_fov_keys_set_their_camera_and_claim_the_launch_value() {
+        let config = apply(
+            "[Display]
+fDefaultWorldFOV=90.0000
+fDefault1stPersonFOV=70
+",
+        );
+        assert_eq!(
+            (config.world_fov_degrees, config.first_person_fov_degrees),
+            (90.0, 70.0)
+        );
+        for key in ["ini:fDefaultWorldFOV", "ini:fDefault1stPersonFOV"] {
+            assert!(config.settings_overrides.iter().any(|flag| flag == key));
+        }
+    }
+
+    #[test]
+    fn absent_or_unusable_fov_values_keep_the_retail_default() {
+        let retail = crate::camera_fov::RETAIL_DEFAULT_FOV_DEGREES;
+        for text in [
+            "",
+            "[Display]
+fDefaultWorldFOV=0
+fDefault1stPersonFOV=29
+",
+            "[Display]
+fDefaultWorldFOV=180
+fDefault1stPersonFOV=NaN
+",
+            "[Display]
+fDefaultWorldFOV=wide
+fDefault1stPersonFOV=inf
+",
+            "[General]
+fDefaultWorldFOV=90
+fDefault1stPersonFOV=90
+",
+        ] {
+            let config = apply(text);
+            assert_eq!(
+                (config.world_fov_degrees, config.first_person_fov_degrees),
+                (retail, retail),
+                "{text}"
+            );
+            assert!(
+                !config
+                    .settings_overrides
+                    .iter()
+                    .any(|flag| flag.contains("FOV")),
+                "{text}"
+            );
         }
     }
 

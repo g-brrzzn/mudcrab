@@ -257,6 +257,12 @@ pub struct EngineConfig {
     pub grass_terrain_radii: Option<(i32, i32)>,
     /// Optional upper bound for sun-shadow cascades from `[Display] fShadowDistance`.
     pub sun_shadow_distance_limit: Option<f32>,
+    /// Horizontal free-camera (NOCLIP) field of view in degrees, from `[Display] fDefaultWorldFOV`;
+    /// the retail executable default without an INI value (see `camera_fov`).
+    pub world_fov_degrees: f32,
+    /// Horizontal first-person (WALK) field of view in degrees, from
+    /// `[Display] fDefault1stPersonFOV`; the retail executable default without an INI value.
+    pub first_person_fov_degrees: f32,
     /// Optional sun bearing clockwise from north and elevation above the horizon, in degrees.
     pub sun_position: Option<(f32, f32)>,
     /// Initial game hour; deterministic captures freeze at this hour. The default is the retail
@@ -474,6 +480,8 @@ impl Default for EngineConfig {
             unload_radius: 3,
             grass_terrain_radii: None,
             sun_shadow_distance_limit: None,
+            world_fov_degrees: crate::camera_fov::RETAIL_DEFAULT_FOV_DEGREES,
+            first_person_fov_degrees: crate::camera_fov::RETAIL_DEFAULT_FOV_DEGREES,
             sun_position: None,
             game_hour: crate::sun::RETAIL_GAME_HOUR, // GLOB 0x38 `GameHour` = 8.0 in the pack
             timescale: 20.0,

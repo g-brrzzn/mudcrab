@@ -10,6 +10,7 @@ mod background_window;
 #[cfg(test)]
 mod bevy_source;
 pub mod bug_report;
+pub mod camera_fov;
 mod capture_frame;
 pub mod cell_commands;
 pub mod color_pipeline;

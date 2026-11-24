@@ -110,11 +110,7 @@ fn prepare_start_camera(
         config.worldspace_id = worldspace;
     }
     if let Some((settings, settings_file)) = preferences {
-        settings_file.apply_start_shot(
-            settings,
-            crate::shots::vertical_fov_degrees(file.shots[0].hfov, file.aspect()),
-            (file.width, file.height),
-        );
+        settings_file.apply_start_shot(settings, file.shots[0].hfov, (file.width, file.height));
     }
     Ok(Some(InitialWorldCameraPose {
         shot: file.shots[0].clone(),
@@ -5299,7 +5295,14 @@ mod tests {
             .insert_resource(preferences.0)
             .insert_resource(preferences.1)
             .add_systems(Startup, setup_world)
-            .add_systems(Update, crate::settings::apply_render_settings);
+            .add_systems(
+                Update,
+                (
+                    crate::settings::apply_render_settings,
+                    crate::camera_fov::follow_camera_fov,
+                )
+                    .chain(),
+            );
         let window = Window {
             resolution: pose
                 .as_ref()
@@ -5313,14 +5316,16 @@ mod tests {
         app
     }
 
+    /// `fov` is the horizontal angle; the camera holds it for the window's shape.
     fn assert_interactive_framing(app: &mut App, fov: f32, size: (u32, u32)) {
+        let fov = crate::camera_fov::vertical_fov_radians(fov, size.0 as f32 / size.1 as f32);
         let mut query = app
             .world_mut()
             .query_filtered::<&Projection, With<StreamingCamera>>();
         let Projection::Perspective(projection) = query.single(app.world()).unwrap() else {
             panic!("perspective camera")
         };
-        assert!((projection.fov - fov.to_radians()).abs() < 1e-6);
+        assert!((projection.fov - fov).abs() < 1e-6);
         let mut query = app
             .world_mut()
             .query_filtered::<&Window, With<bevy::window::PrimaryWindow>>();
@@ -5353,7 +5358,8 @@ mod tests {
         // Include a preset equal to the reset default: reset must still clear custom dimensions.
         for window_size in [1, 3] {
             let saved = RenderingSettings {
-                fov_degrees: 99.0,
+                world_fov_degrees: 99.0,
+                first_person_fov_degrees: 99.0,
                 window_size,
                 window_mode: 1,
                 ..default()
@@ -5361,7 +5367,7 @@ mod tests {
             let bytes = serde_json::to_vec(&saved).unwrap();
             std::fs::write(&settings_path, &bytes).unwrap();
             let mut app = interactive_framing_app(&settings_path, Some(shot_path.clone()));
-            let fov = crate::shots::vertical_fov_degrees(18.0, 1379.0 / 911.0);
+            let fov = 18.0;
             app.update();
             assert_interactive_framing(&mut app, fov, (1379, 911));
             app.world_mut().resource_mut::<RenderingSettings>().hud = false;
@@ -5373,7 +5379,11 @@ mod tests {
             app.world_mut().resource_mut::<SettingsFile>().save(&active);
             let persisted: RenderingSettings =
                 serde_json::from_slice(&std::fs::read(&settings_path).unwrap()).unwrap();
-            assert_eq!(persisted.fov_degrees, saved.fov_degrees);
+            assert_eq!(persisted.world_fov_degrees, saved.world_fov_degrees);
+            assert_eq!(
+                persisted.first_person_fov_degrees,
+                saved.first_person_fov_degrees
+            );
             assert_eq!(persisted.window_size, saved.window_size);
             assert_eq!(persisted.window_mode, saved.window_mode);
             assert_eq!(persisted.window_size_override, None);
@@ -5383,7 +5393,7 @@ mod tests {
             let defaults = RenderingSettings::default();
             assert_interactive_framing(
                 &mut app,
-                defaults.fov_degrees,
+                defaults.world_fov_degrees,
                 WINDOW_SIZES[defaults.window_size],
             );
         }
@@ -5401,7 +5411,7 @@ mod tests {
         {
             let mut settings = app.world_mut().resource_mut::<RenderingSettings>();
             settings.window_size = 2;
-            settings.fov_degrees = 75.0;
+            settings.world_fov_degrees = 75.0;
         }
         app.update();
         assert_interactive_framing(&mut app, 75.0, WINDOW_SIZES[2]);
@@ -5417,7 +5427,7 @@ mod tests {
         for saved in [
             None,
             Some(RenderingSettings {
-                fov_degrees: 90.0,
+                world_fov_degrees: 90.0,
                 window_size: 3,
                 ..default()
             }),
@@ -5431,14 +5441,14 @@ mod tests {
             app.update();
             assert_interactive_framing(
                 &mut app,
-                expected.fov_degrees,
+                expected.world_fov_degrees,
                 WINDOW_SIZES[expected.window_size],
             );
             reset_interactive_settings(&mut app);
             let defaults = RenderingSettings::default();
             assert_interactive_framing(
                 &mut app,
-                defaults.fov_degrees,
+                defaults.world_fov_degrees,
                 WINDOW_SIZES[defaults.window_size],
             );
         }

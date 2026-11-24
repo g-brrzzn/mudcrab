@@ -97,7 +97,10 @@ pub struct RenderingSettings {
     pub grade_override_mask: u16,
     /// Multiplier on retail fMouseHeadingSensitivity; 1 preserves the movement-type defaults.
     pub mouse_sensitivity: f32,
-    pub fov_degrees: f32,
+    /// Horizontal NOCLIP field of view in degrees (`[Display] fDefaultWorldFOV`).
+    pub world_fov_degrees: f32,
+    /// Horizontal WALK field of view in degrees (`[Display] fDefault1stPersonFOV`).
+    pub first_person_fov_degrees: f32,
     pub vsync: bool,
     pub window_mode: usize,
     pub window_size: usize,
@@ -179,7 +182,8 @@ impl Default for RenderingSettings {
             grade_pivot: 0.18,
             grade_override_mask: 0,
             mouse_sensitivity: 1.0,
-            fov_degrees: PerspectiveProjection::default().fov.to_degrees(),
+            world_fov_degrees: crate::camera_fov::RETAIL_DEFAULT_FOV_DEGREES,
+            first_person_fov_degrees: crate::camera_fov::RETAIL_DEFAULT_FOV_DEGREES,
             vsync: true,
             window_mode: 0,
             window_size: 1,
@@ -242,6 +246,8 @@ macro_rules! toggle {
         }
     };
 }
+const FOV_MIN: f64 = crate::camera_fov::MIN_FOV_DEGREES as f64;
+const FOV_MAX: f64 = crate::camera_fov::MAX_FOV_DEGREES as f64;
 macro_rules! number {
     ($page:ident, $group:literal, $label:literal, $field:ident $( [$index:literal] )?; $min:expr, $max:expr, $step:expr) => { SettingSpec {
         label: $label, page: SettingsPage::$page, group: $group,
@@ -359,7 +365,8 @@ pub static SETTING_SPECS: &[SettingSpec] = &[
             "Khronos PBR neutral",
         ]
     ),
-    number!(Graphics, "Image", "Vertical field of view (degrees)", fov_degrees; 30.0, 110.0, 5.0),
+    number!(Graphics, "Image", "First-person field of view (horizontal degrees)", first_person_fov_degrees; FOV_MIN, FOV_MAX, 5.0),
+    number!(Graphics, "Image", "Free-camera field of view (horizontal degrees)", world_fov_degrees; FOV_MIN, FOV_MAX, 5.0),
     choice!(
         "Image",
         "Visual profile (restart)",
@@ -637,6 +644,8 @@ impl RenderingSettings {
         self.lod_level1_distance = config.terrain_lod.block_level1_distance;
         self.lod_maximum_distance = config.terrain_lod.block_maximum_distance;
         self.lod_multiplier = config.terrain_lod.split_distance_mult;
+        self.world_fov_degrees = config.world_fov_degrees;
+        self.first_person_fov_degrees = config.first_person_fov_degrees;
         self.cell_commits = config.max_cell_commits_per_frame;
         self.commit_ms = config.max_commit_micros_per_frame as f64 / 1000.0;
         self.cell_unloads = config.max_cell_unloads_per_frame;
@@ -683,6 +692,10 @@ impl RenderingSettings {
                     self.lod_maximum_distance = source.lod_maximum_distance
                 }
                 "ini:fSplitDistanceMult" => self.lod_multiplier = source.lod_multiplier,
+                "ini:fDefaultWorldFOV" => self.world_fov_degrees = source.world_fov_degrees,
+                "ini:fDefault1stPersonFOV" => {
+                    self.first_person_fov_degrees = source.first_person_fov_degrees
+                }
                 "--max-commit-ms" => self.commit_ms = source.commit_ms,
                 "--max-unloads-per-frame" => self.cell_unloads = source.cell_unloads,
                 "--max-model-spawns-per-frame" => self.model_spawns = source.model_spawns,
@@ -791,10 +804,11 @@ impl SettingsFile {
     pub(crate) fn apply_start_shot(
         &mut self,
         settings: &mut RenderingSettings,
-        fov_degrees: f32,
+        horizontal_fov_degrees: f32,
         dimensions: (u32, u32),
     ) {
-        settings.fov_degrees = fov_degrees;
+        settings.world_fov_degrees = horizontal_fov_degrees;
+        settings.first_person_fov_degrees = horizontal_fov_degrees;
         settings.window_mode = 0;
         settings.window_size_override = Some(dimensions);
         if !self
@@ -902,7 +916,8 @@ impl SettingsFile {
             .iter()
             .any(|flag| flag == "--start-shot")
         {
-            persisted.fov_degrees = self.stored.fov_degrees;
+            persisted.world_fov_degrees = self.stored.world_fov_degrees;
+            persisted.first_person_fov_degrees = self.stored.first_person_fov_degrees;
             persisted.window_mode = self.stored.window_mode;
             persisted.window_size = self.stored.window_size;
         }
@@ -1113,7 +1128,6 @@ pub(crate) struct RenderSettingsTargets<'w, 's> {
             &'static mut Exposure,
             &'static mut Tonemapping,
             &'static mut Msaa,
-            &'static mut Projection,
             Ref<'static, StreamingCamera>,
         ),
         With<StreamingCamera>,
@@ -1437,17 +1451,14 @@ pub(crate) fn apply_render_settings(
         fade.start = start;
         fade.end = end;
     }
-    for (entity, mut exposure, mut tone_map, mut msaa, mut projection, camera) in
-        &mut targets.cameras
-    {
+    // The field of view follows the window shape and the camera mode as well, so
+    // `camera_fov::follow_camera_fov` owns it.
+    for (entity, mut exposure, mut tone_map, mut msaa, camera) in &mut targets.cameras {
         exposure.ev100 = settings.exposure_ev100;
         if tone.mode == crate::tone_mapping::SceneToneMapMode::Tony {
             *tone_map = TONE_MAPS[settings.tone_map];
         }
         *msaa = MSAA_MODES[settings.msaa];
-        if let Projection::Perspective(p) = &mut *projection {
-            p.fov = settings.fov_degrees.to_radians();
-        }
         apply_camera_features(&mut commands, entity, &settings, drawing, camera.is_added());
     }
     for (entity, camera) in &targets.reflections {
@@ -3370,6 +3381,64 @@ mod tests {
         assert_eq!((loaded.stream_radius, loaded.unload_radius), (4, 5));
     }
 
+    /// An INI field of view wins over the saved menu value for this launch, as Skyrim reads its
+    /// INI, and Save keeps the menu value the player chose. A key the INI leaves out keeps the
+    /// saved value.
+    #[test]
+    fn ini_fov_owns_the_launch_and_save_keeps_the_menu_value() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let ini = directory.path().join("Skyrim.ini");
+        let saved = RenderingSettings {
+            world_fov_degrees: 100.0,
+            first_person_fov_degrees: 95.0,
+            ..default()
+        };
+        save_settings(&path, &saved).unwrap();
+        std::fs::write(&ini, "[Display]\nfDefaultWorldFOV=70\n").unwrap();
+        let mut config = launch(&["--ini".into(), ini.display().to_string()]);
+        let (loaded, mut file) = prepare_settings_at(&mut config, Some(path.clone()));
+        assert_eq!(
+            (loaded.world_fov_degrees, loaded.first_person_fov_degrees),
+            (70.0, 95.0)
+        );
+        file.save(&loaded);
+        let persisted: RenderingSettings =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            (
+                persisted.world_fov_degrees,
+                persisted.first_person_fov_degrees
+            ),
+            (100.0, 95.0)
+        );
+    }
+
+    /// A settings file saved before the field of view became horizontal has only the old vertical
+    /// `fov_degrees`; it still loads and starts at the retail default.
+    #[test]
+    fn a_pre_horizontal_settings_file_loads_with_the_retail_fov() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut old = serde_json::to_value(RenderingSettings::default()).unwrap();
+        let fields = old.as_object_mut().unwrap();
+        fields.remove("world_fov_degrees");
+        fields.remove("first_person_fov_degrees");
+        fields.insert("fov_degrees".into(), serde_json::json!(45.0));
+        std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let mut config = EngineConfig {
+            grass: false,
+            ..default()
+        };
+        let (loaded, file) = prepare_settings_at(&mut config, Some(path));
+        let retail = crate::camera_fov::RETAIL_DEFAULT_FOV_DEGREES;
+        assert_eq!(
+            (loaded.world_fov_degrees, loaded.first_person_fov_degrees),
+            (retail, retail)
+        );
+        assert!(!file.status.contains("ignored"), "{}", file.status);
+    }
+
     /// Invalid files retain terrain-only launch values without imposing grass coverage.
     #[test]
     fn invalid_saved_choices_fall_back_without_losing_launch_settings() {
@@ -3562,7 +3631,10 @@ mod tests {
             })
             .insert_resource(RenderingSettings::default())
             .insert_resource(RenderAssetBytesPerFrame::default())
-            .add_systems(Update, apply_render_settings);
+            .add_systems(
+                Update,
+                (apply_render_settings, crate::camera_fov::follow_camera_fov).chain(),
+            );
         let camera = app
             .world_mut()
             .spawn((
@@ -3582,7 +3654,7 @@ mod tests {
             settings.indirect_drawing = false;
             settings.cpu_frustum_culling = false;
             settings.exposure_ev100 = 8.5;
-            settings.fov_degrees = 70.0;
+            settings.world_fov_degrees = 70.0;
             settings.upload_mib = 0;
             settings.io_threads = 4;
         }

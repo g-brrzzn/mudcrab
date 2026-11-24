@@ -115,6 +115,7 @@ impl Plugin for SettingsPlugin {
                     menu_actions,
                     mouse_sensitivity_slider,
                     apply_render_settings,
+                    crate::camera_fov::follow_camera_fov,
                     refresh_menu,
                     style_rows,
                     scroll_menu,
